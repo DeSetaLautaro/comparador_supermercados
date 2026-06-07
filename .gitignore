@@ -4,3 +4,9 @@ venv/
 .streamlit/
 *.csv
 *.zip
+
+Datos masivos de Precios Claros (los descarga el robot)
+backend/data/
+data/
+*.zip
+*.db
