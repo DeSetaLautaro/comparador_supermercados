@@ -1,18 +1,67 @@
+# ==============================================================================
+# 0. CONFIGURACIÓN E IMPORTS
+# ==============================================================================
 import zipfile
 import pandas as pd
 import duckdb
 from pathlib import Path
 import requests
 from pathlib import Path
+import sys
+import datetime
 
+
+# 1. Buscamos la ruta absoluta de donde está parado este archivo 'services.py'
+ruta_actual = Path(__file__).resolve()
+
+# 2. Viajamos hacia atrás en el árbol de carpetas hasta llegar a la carpeta 'backend'
+# Estructura: services.py (actual) -> scrapers -> services -> modules -> app -> backend
+ruta_raiz_backend = ruta_actual.parents[3] 
+
+# 3. Le agregamos esa ruta al cerebro de Python si es que no está ya metida
+if str(ruta_raiz_backend) not in sys.path:
+    sys.path.insert(0, str(ruta_raiz_backend))
+
+# ------------------------------------------------------------------------
+# ¡RECIÉN ACÁ HAGO MIS IMPORTS A ARCHIVOS DEL PROYECTO!
+# Python ahora va a encontrar 'app' sin importar desde dónde ejecutes.
+# ------------------------------------------------------------------------
 from app.core.config import ZIP_PATH, DB_PATH
 
 
-# ─────────────────────────────────────────────
-# Paso cero: extraer datos de internet con request
-# ─────────────────────────────────────────────
+# ==============================================================================
+# 1. PASO CERO: DESCARGA EXTERNA
+# ==============================================================================
+
+# ──────────────────────────────────────────────────────────────────────────────────────────
+# obtener la url según el día de la semana
+# ──────────────────────────────────────────────────────────────────────────────────────────
+
+def obtener_url_zip_dinamica() -> str:
+    # 1. Armamos un diccionario para pasar del inglés de Python al español de la URL
+    dias_semana = {
+        "Monday": "lunes",
+        "Tuesday": "martes",
+        "Wednesday": "miercoles",
+        "Thursday": "jueves",
+        "Friday": "viernes",
+        "Saturday": "sabado",
+        "Sunday": "domingo"
+    }
+    
+    dia_ingles = datetime.datetime.today().strftime('%A')
+    dia_espanol = dias_semana[dia_ingles]
+    
+    # 3. 🚀 ¡Tu F-String directo a la vena! Construimos el link exacto de hoy
+    url_del_dia = f"https://datos.produccion.gob.ar/dataset/e9ffbef0-c8a3-4d7d-9c50-ae55a2a8f98e/resource/14694559-88b5-4e4a-af83-a57527267828/download/sepa_{dia_espanol}.zip"
+    
+    print(f"🎯 Día detectado: {dia_espanol.upper()} -> URL generada: {url_del_dia}")
+    return url_del_dia
 
 
+# ──────────────────────────────────────────────────────────────────────────────────────────
+# ------------------------------DESCARGAR---------------------------------------------------
+# ──────────────────────────────────────────────────────────────────────────────────────────
 
 def descargar_zip_precios(url: str, ruta_destino: Path) -> None:
     """
@@ -36,164 +85,186 @@ def descargar_zip_precios(url: str, ruta_destino: Path) -> None:
                 
     print(f"✅ Descarga completada. Archivo guardado en: {ruta_destino}")
 
-# ─────────────────────────────────────────────
-# PASO 1 y 2: Extraer comercios y productos (tablas maestras)
-# ─────────────────────────────────────────────
 
-def extraer_comercios(zip_principal: zipfile.ZipFile) -> pd.DataFrame:
-    """
-    Lee el archivo comercio.csv que viene dentro del ZIP principal.
-    Devuelve un DataFrame con todos los comercios del país.
-    """
-    with zip_principal.open("comercio.csv") as f:
-        df = pd.read_csv(f, sep="|", dtype=str)  # dtype=str para no perder ceros a la izquierda en los IDs
+
+
+# ==============================================================================
+# 2. MICRO-EXTRACTORES DE CSV (UN SUPERMERCADO INDIVIDUAL)
+# ==============================================================================
+
+# ──────────────────────────────────────────────────────────────────────────────────────────
+# Extraer los datos de las sucursales de un super
+# ──────────────────────────────────────────────────────────────────────────────────────────
+def extraer_datos_de_sucursales(zip_comercio : zipfile.ZipFile) -> pd.DataFrame | None:
     
-    # Normalizamos nombres de columnas: sin espacios, en minúsculas
-    df.columns = df.columns.str.strip().str.lower()
+    df_lista_sucursales_del_comercio = [s for s in zip_comercio.namelist() if "sucursal" in s.lower()]
     
-    print(f"  Comercios encontrados: {len(df)}")
-    return df
-
-
-def extraer_productos_maestro(zip_principal: zipfile.ZipFile) -> pd.DataFrame:
-    """
-    Lee el archivo productos.csv que viene dentro del ZIP principal.
-    Este es el catálogo general: EAN, descripción, marca.
-    """
-    with zip_principal.open("productos.csv") as f:
-        df = pd.read_csv(f, sep="|", dtype=str)
-    
-    df.columns = df.columns.str.strip().str.lower()
-    
-    print(f"  Productos en catálogo: {len(df)}")
-    return df
-
-
-# ─────────────────────────────────────────────
-# PASO 3: Extraer precios de cada supermercado
-# ─────────────────────────────────────────────
-
-def extraer_precios_de_un_super(zip_principal: zipfile.ZipFile, ruta_zip_interno: str) -> pd.DataFrame | None:
-    """
-    Dado el ZIP principal y la ruta de un ZIP interno (un supermercado),
-    extrae el CSV de precios, estandariza los tipos de datos y devuelve un DataFrame limpio.
-    """
-    try:
-        with zip_principal.open(ruta_zip_interno) as archivo_virtual:
-            with zipfile.ZipFile(archivo_virtual) as zip_interno:
-                
-                archivos_csv = [n for n in zip_interno.namelist() if "productos" in n.lower()]
-                
-                if not archivos_csv:
-                    print(f"  AVISO: No se encontró CSV de productos en {ruta_zip_interno}")
+    if not df_lista_sucursales_del_comercio:
+                    print(f"  AVISO: No se encontró CSV de sucursales en {zip_comercio}")
                     return None
-                
-                with zip_interno.open(archivos_csv[0]) as csv_file:
-                    df = pd.read_csv(
-                        csv_file,
-                        sep="|",
-                        dtype={
+    
+    df_sucursales_del_comercio =df_lista_sucursales_del_comercio[0]
+    
+    with zip_comercio.open(df_sucursales_del_comercio) as arcivo_virtual:
+        
+        df_sucursales_del_comercio = pd.read_csv(arcivo_virtual, sep ="|",
+                                                 dtype={
+                                                     'id_comercio' : str, 
+                                                      'id_bandera': str, 
+                                                      'id_sucursal': str,
+                                                      'sucursales_numero': str
+                                                 })
+        
+        columnas_utiles = ['id_comercio', 'id_bandera', 'id_sucursal', 'sucursales_nombre',
+       'sucursales_tipo', 'sucursales_calle', 'sucursales_numero']
+       
+       # normalización de columnas del dataframe
+        df_sucursales_del_comercio.columns = df_sucursales_del_comercio.columns.str.strip().str.lower()
+        
+        columnas_df = [c for c in columnas_utiles if c in df_sucursales_del_comercio.columns]
+        df_sucursales_del_comercio = df_sucursales_del_comercio[columnas_df].copy()
+        
+        
+    return df_sucursales_del_comercio
+    
+# ──────────────────────────────────────────────────────────────────────────────────────────
+# Extraer los datos del comercio de un super
+# ──────────────────────────────────────────────────────────────────────────────────────────
+def extraer_datos_del_comercio(zip_comercio : zipfile.ZipFile) -> pd.DataFrame | None:
+    
+    lista_datos_comercio = [c for c in zip_comercio.namelist() if "comercio" in c.lower() and not "sucursal" in c.lower()]
+    
+    if not lista_datos_comercio:
+                    print(f"  AVISO: No se encontró CSV de comercio en {zip_comercio}")
+                    return None
+    
+    datos_comercio = lista_datos_comercio[0]
+    
+    with zip_comercio.open(datos_comercio) as arcivo_virtual:
+        df_comercio = pd.read_csv(arcivo_virtual, sep ="|", dtype={
+            'id_comercio' : str, 
+            'id_bandera'  : str
+        })
+        
+        
+    return df_comercio
+
+# ──────────────────────────────────────────────────────────────────────────────────────────
+# Extraer los datos útiles de la tabla "Productos" de un super
+# ──────────────────────────────────────────────────────────────────────────────────────────
+
+def extraer_precios_del_comercio(zip_comercio: zipfile.ZipFile) -> pd.DataFrame:
+    
+    lista_precio_comercios = [p for p in zip_comercio.namelist() if "productos" in p.lower()]
+    
+    if not lista_precio_comercios:
+                    print(f"  AVISO: No se encontró CSV de productos en {zip_comercio}")
+                    return None
+    
+    precio_comercios = lista_precio_comercios[0]
+    
+    with zip_comercio.open(precio_comercios) as arcivo_virtual:
+        
+        df_precios = pd.read_csv(arcivo_virtual, sep= "|",
+                                 dtype={
                             "id_comercio": str,
                             "id_bandera": str,
                             "id_sucursal": str,
                             "id_producto": str,
                             "productos_ean": str,
-                        }
-                    )
-        
-        df.columns = df.columns.str.strip().str.lower()
+                        })
+        df_precios.columns = df_precios.columns.str.strip().str.lower()
         
         columnas_utiles = [
             "productos_ean",
             "id_comercio",
             "id_bandera",
             "id_sucursal",
-            "productos_precio",
+            "productos_precio_lista",
+            "productos_precio_referencia",
+            "productos_descripcion",
+            "productos_precio_unitario_promo1",
+            "productos_precio_unitario_promo2"
         ]
         
-        columnas_presentes = [c for c in columnas_utiles if c in df.columns]
-        df = df[columnas_presentes].copy() 
-        
-        # BLINDAJE DE PRECIOS: Convertimos a float y lo que no sea número lo transforma en NaN
-        if "productos_precio" in df.columns:
-            df["productos_precio"] = pd.to_numeric(df["productos_precio"], errors="coerce")
-            # Opcional: Eliminamos filas que se hayan quedado sin precio válido
-            df = df.dropna(subset=["productos_precio"])
-        
-        return df
-
-    except Exception as e:
-        print(f"  ERROR procesando {ruta_zip_interno}: {e}")
-        return None
-
-    except Exception as e:
-        print(f"  ERROR procesando {ruta_zip_interno}: {e}")
-        return None
-
-
-def extraer_todos_los_precios(zip_principal: zipfile.ZipFile) -> pd.DataFrame:
-    """
-    Itera sobre todos los ZIPs internos del ZIP principal,
-    extrae los precios de cada supermercado y los une en un solo DataFrame.
-    """
-    # Listamos todos los archivos dentro del ZIP principal
-    todos_los_archivos = zip_principal.namelist()
-    
-    # Nos quedamos solo con los que son ZIPs (uno por supermercado)
-    zips_internos = [f for f in todos_los_archivos if f.endswith(".zip")]
-    
-    print(f"  Supermercados encontrados: {len(zips_internos)}")
-    
-    # Acumulamos los DataFrames de cada supermercado en esta lista
-    lista_dataframes = []
-    
-    for i, ruta_zip in enumerate(zips_internos, start=1):
-        print(f"  Procesando {i}/{len(zips_internos)}: {ruta_zip}")
-        df_super = extraer_precios_de_un_super(zip_principal, ruta_zip)
-        
-        if df_super is not None and not df_super.empty:
-            lista_dataframes.append(df_super)
-    
-    if not lista_dataframes:
-        raise ValueError("No se pudo extraer ningún dato de precios del ZIP.")
-    
-    # pd.concat une todos los DataFrames en uno solo (apilando filas)
-    df_precios = pd.concat(lista_dataframes, ignore_index=True)
-    
-    print(f"  Total de registros de precios: {len(df_precios):,}")
+        columnas_presentes = [c for c in columnas_utiles if c in df_precios.columns]
+        df_precios = df_precios[columnas_presentes].copy()
     return df_precios
 
 
-# ─────────────────────────────────────────────
-# PASO 4: Guardar todo en DuckDB
-# ─────────────────────────────────────────────
+# ==============================================================================
+# 3. ACUMULADOR GENERAL (EL BUCLE MAMUSHKA RECURSIVO)
+# ==============================================================================
 
-def guardar_en_duckdb(df_comercios: pd.DataFrame, df_productos: pd.DataFrame, df_precios: pd.DataFrame) -> None:
+def extraer_todos_los_zips(zip_principal : zipfile.ZipFile) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame] | None:
+
+    lista_comercios = []
+    lista_sucursales = []
+    lista_productos = []
+    lista_zips_internos = [z for z in zip_principal.namelist() if z.endswith(".zip")]
+    
+    if not lista_zips_internos:
+        print (f"No se encontraron archivos zip en {zip_principal}")
+        return None
+    
+    for i in range(0, len(lista_zips_internos)):
+    
+        with zip_principal.open(lista_zips_internos[i]) as carpeta_virtual:
+            zip_super_individual = zipfile.ZipFile(carpeta_virtual)  
+            df_comercio = extraer_datos_del_comercio(zip_super_individual)
+            df_sucur = extraer_datos_de_sucursales(zip_super_individual)
+            df_productos = extraer_precios_del_comercio(zip_super_individual)
+        
+            lista_comercios.append(df_comercio)
+            lista_sucursales.append(df_sucur)
+            lista_productos.append(df_productos)
+        
+    df_comercios_acumulados = pd.concat(lista_comercios, ignore_index=True) 
+    df_sucursales_acumuladas = pd.concat(lista_sucursales, ignore_index=True)
+    df_productos_acumulados = pd.concat(lista_productos, ignore_index=True)   
+        
+    return df_comercios_acumulados, df_sucursales_acumuladas, df_productos_acumulados
+
+# ==============================================================================
+# 4. PERSISTENCIA EN ALMACENAMIENTO COLUMNAR (DUCKDB)
+# ==============================================================================
+ 
+
+def guardar_en_duckdb(df_comercios: pd.DataFrame, df_sucursales: pd.DataFrame, df_precios: pd.DataFrame) -> None:
     """
-    Guarda los tres DataFrames en DuckDB de forma eficiente y limpia.
+    Guarda los tres DataFrames maestros en DuckDB de forma eficiente, limpia y optimizada.
     """
+    # Creamos la carpeta contenedora si no existe de forma segura
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     
+    print(f"⏳ Conectando a la base de datos en: {DB_PATH}...")
     con = duckdb.connect(str(DB_PATH))
     
-    # Usar el método nativo de DuckDB para registrar dataframes es más rápido y seguro
-    print("  Escribiendo tablas en DuckDB de forma nativa...")
-    con.execute("CREATE OR REPLACE TABLE comercios AS SELECT * FROM df_comercios")
-    con.execute("CREATE OR REPLACE TABLE productos AS SELECT * FROM df_productos")
-    con.execute("CREATE OR REPLACE TABLE precios AS SELECT * FROM df_precios")
-    
-    # ⚡ OPTIMIZACIÓN EXTRA: Creamos un índice en la tabla de precios por EAN
-    # Esto va a hacer que cuando busques un producto en tu comparador, la respuesta sea instantánea.
-    print("  Creando índices analíticos...")
-    con.execute("CREATE INDEX IF NOT EXISTS idx_precios_ean ON precios (productos_ean)")
-    
-    con.close()
-    print(f"  Base de datos optimizada y guardada en: {DB_PATH}")
-
-
-# ─────────────────────────────────────────────
-# Función principal: orquesta todo el proceso ETL
-# ─────────────────────────────────────────────
+    try:
+        print("💾 Escribiendo tablas en DuckDB de forma nativa...")
+        # DuckDB mapea directo las variables df_comercios, df_sucursales y df_precios de la RAM
+        con.execute("CREATE OR REPLACE TABLE comercios AS SELECT * FROM df_comercios")
+        con.execute("CREATE OR REPLACE TABLE sucursales AS SELECT * FROM df_sucursales")
+        con.execute("CREATE OR REPLACE TABLE precios AS SELECT * FROM df_precios")
+        
+        # OPTIMIZACIÓN
+        print("⚡ Creando índices analíticos para búsquedas instantáneas...")
+        con.execute("CREATE INDEX IF NOT EXISTS idx_precios_ean ON precios (productos_ean)")
+        
+        print(f"🚀 ¡Base de datos optimizada y guardada con éxito!")
+        
+    except Exception as e:
+        print(f"❌ Error crítico al guardar en DuckDB: {e}")
+        
+    finally:
+        con.close()
+        print("🔒 Conexión cerrada de forma segura.")
+        
+        
+        
+# ==============================================================================
+# 5. ORQUESTADOR PRINCIPAL DEL ETL
+# ==============================================================================
 
 def correr_etl(zip_path: Path = ZIP_PATH) -> None:
     """
@@ -209,36 +280,45 @@ def correr_etl(zip_path: Path = ZIP_PATH) -> None:
     print("Iniciando ETL de SEPA - Precios Claros")
     print("=" * 50)
     
-    if not zip_path.exists():
-        URL_OFICIAL_SEPA = "https://datos.produccion.gob.ar/dataset/.../precios.zip" # El link real de donde se baja
     
-    ## 🔥 PASO 0: Descarga fresca de internet
-     #   print("\n[0/4] Descargando datos actualizados de internet...")
-      #  descargar_zip_precios(URL_OFICIAL_SEPA, ZIP_PATH)
+    URL_OFICIAL_SEPA = obtener_url_zip_dinamica()
     
-    # Abrimos el ZIP principal UNA sola vez y lo reutilizamos en todos los pasos
-    with zipfile.ZipFile(zip_path, "r") as zip_principal:
+
+    descargar_zip_precios(URL_OFICIAL_SEPA, ZIP_PATH)
+    
+    
+    with zipfile.ZipFile(ZIP_PATH, "r") as zip_principal:
+        print("\n[1-3/4] Extrayendo y acumulando todos los comercios, sucursales y precios en la RAM...")
         
-        print("\n[1/4] Extrayendo comercios...")
-        df_comercios = extraer_comercios(zip_principal)
+        resultado = extraer_todos_los_zips(zip_principal)
         
-        print("\n[2/4] Extrayendo catálogo de productos...")
-        df_productos = extraer_productos_maestro(zip_principal)
+        if resultado is None:
+            print("❌ ERROR: El motor de extracción devolvió None.")
+            return
         
-        print("\n[3/4] Extrayendo precios de todos los supermercados...")
-        df_precios = extraer_todos_los_precios(zip_principal)
+        df_comercios_acumulados, df_sucursales_acumuladas, df_productos_acumulados = resultado
     
     print("\n[4/4] Guardando en DuckDB...")
-    guardar_en_duckdb(df_comercios, df_productos, df_precios)
+    guardar_en_duckdb(df_comercios_acumulados, df_sucursales_acumuladas, df_productos_acumulados
+)
     
     print("\n" + "=" * 50)
     print("ETL finalizado correctamente.")
     print("=" * 50)
-
-
-# ─────────────────────────────────────────────
-# Permite ejecutar el ETL directamente con: python services.py
-# ─────────────────────────────────────────────
-
+    
+    # LIMPIEZA. Borramos el archivo zip
+    print("\n🧹 Limpiando archivos temporales...")
+    if zip_path.exists():
+        zip_path.unlink() 
+        print("🗑️ Archivo ZIP eliminado correctamente para liberar espacio.")
+    
+    print("\n" + "=" * 50)
+    print("ETL finalizado correctamente. ¡Pipeline 100% optimizado!")
+    print("=" * 50)
+    
+    
+# ==============================================================================
+# 6. DISPARADOR DE CONSOLA
+# ==============================================================================
 if __name__ == "__main__":
     correr_etl()
