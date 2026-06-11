@@ -89,7 +89,36 @@ def descargar_zip_precios(url: str, ruta_destino: Path) -> None:
 
 
 # ==============================================================================
-# 2. MICRO-EXTRACTORES DE CSV (UN SUPERMERCADO INDIVIDUAL)
+# 2. UTILIDADES DE LIMPIEZA
+# ==============================================================================
+
+# Columnas que son IDs y deben ser strings limpios (sin ".0" ni "nan")
+COLUMNAS_ID = ["id_comercio", "id_bandera", "id_sucursal", "id_producto", "productos_ean"]
+
+def limpiar_columnas_id(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Problema: pandas lee IDs numéricos como float64 (ej: 1.0, 2.0).
+    Al convertirlos a string quedan como "1.0" en vez de "1",
+    lo que rompe los JOINs entre tablas.
+
+    Esta función limpia todas las columnas de ID que existan en el DataFrame:
+      - "1.0"  → "1"
+      - "nan"  → None  (valor nulo real, no el string "nan")
+    """
+    for col in COLUMNAS_ID:
+        if col not in df.columns:
+            continue
+        # Paso 1: convertir a string (por si vienen como float)
+        df[col] = df[col].astype(str)
+        # Paso 2: sacar el ".0" del final  ("1.0" → "1", "123.0" → "123")
+        df[col] = df[col].str.replace(r"\.0$", "", regex=True)
+        # Paso 3: reemplazar el string "nan" por None (nulo real de Python)
+        df[col] = df[col].replace("nan", None)
+    return df
+
+
+# ==============================================================================
+# 3. MICRO-EXTRACTORES DE CSV (UN SUPERMERCADO INDIVIDUAL)
 # ==============================================================================
 
 # ──────────────────────────────────────────────────────────────────────────────────────────
@@ -118,14 +147,13 @@ def extraer_datos_de_sucursales(zip_comercio : zipfile.ZipFile) -> pd.DataFrame 
         columnas_utiles = ['id_comercio', 'id_bandera', 'id_sucursal', 'sucursales_nombre',
        'sucursales_tipo', 'sucursales_calle', 'sucursales_numero']
        
-       # normalización de columnas del dataframe
+               # normalización de columnas del dataframe
         df_sucursales_del_comercio.columns = df_sucursales_del_comercio.columns.str.strip().str.lower()
         
         columnas_df = [c for c in columnas_utiles if c in df_sucursales_del_comercio.columns]
         df_sucursales_del_comercio = df_sucursales_del_comercio[columnas_df].copy()
-        
-        
-    return df_sucursales_del_comercio
+
+    return limpiar_columnas_id(df_sucursales_del_comercio)
     
 # ──────────────────────────────────────────────────────────────────────────────────────────
 # Extraer los datos del comercio de un super
@@ -145,9 +173,8 @@ def extraer_datos_del_comercio(zip_comercio : zipfile.ZipFile) -> pd.DataFrame |
             'id_comercio' : str, 
             'id_bandera'  : str
         })
-        
-        
-    return df_comercio
+
+    return limpiar_columnas_id(df_comercio)
 
 # ──────────────────────────────────────────────────────────────────────────────────────────
 # Extraer los datos útiles de la tabla "Productos" de un super
@@ -189,7 +216,8 @@ def extraer_precios_del_comercio(zip_comercio: zipfile.ZipFile) -> pd.DataFrame:
         
         columnas_presentes = [c for c in columnas_utiles if c in df_precios.columns]
         df_precios = df_precios[columnas_presentes].copy()
-    return df_precios
+
+    return limpiar_columnas_id(df_precios)
 
 
 # ==============================================================================
@@ -210,14 +238,14 @@ def extraer_todos_los_zips(zip_principal : zipfile.ZipFile) -> tuple[pd.DataFram
     for i in range(0, len(lista_zips_internos)):
     
         with zip_principal.open(lista_zips_internos[i]) as carpeta_virtual:
-            zip_super_individual = zipfile.ZipFile(carpeta_virtual)  
-            df_comercio = extraer_datos_del_comercio(zip_super_individual)
-            df_sucur = extraer_datos_de_sucursales(zip_super_individual)
-            df_productos = extraer_precios_del_comercio(zip_super_individual)
-        
-            lista_comercios.append(df_comercio)
-            lista_sucursales.append(df_sucur)
-            lista_productos.append(df_productos)
+            with zipfile.ZipFile(carpeta_virtual) as zip_super_individual:  
+                df_comercio = extraer_datos_del_comercio(zip_super_individual)
+                df_sucur = extraer_datos_de_sucursales(zip_super_individual)
+                df_productos = extraer_precios_del_comercio(zip_super_individual)
+            
+                lista_comercios.append(df_comercio)
+                lista_sucursales.append(df_sucur)
+                lista_productos.append(df_productos)
         
     df_comercios_acumulados = pd.concat(lista_comercios, ignore_index=True) 
     df_sucursales_acumuladas = pd.concat(lista_sucursales, ignore_index=True)
